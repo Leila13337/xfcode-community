@@ -2,7 +2,7 @@ import http from 'node:http';
 import { installProfiles } from './profiles.mjs';
 import { installFeatures } from './features.mjs';
 import { DatabaseSync } from 'node:sqlite';
-import { scrypt, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { scrypt, randomBytes, randomInt, createHash, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -14,13 +14,25 @@ const DATA = process.env.GS_DATA_DIR || path.join(ROOT, 'data');
 await mkdir(DATA, { recursive: true });
 const db = new DatabaseSync(path.join(DATA, 'forum.sqlite'));
 db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
-db.exec('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT \'Asia/Shanghai\', privacy TEXT NOT NULL DEFAULT \'private\', created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, csrf TEXT NOT NULL, user_id INTEGER REFERENCES users(id), expires INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS forums (id INTEGER PRIMARY KEY, category TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL, sort INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS topics (id INTEGER PRIMARY KEY, forum_id INTEGER NOT NULL REFERENCES forums(id), author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, views INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, topic_id INTEGER NOT NULL REFERENCES topics(id), author_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS saved (user_id INTEGER REFERENCES users(id), topic_id INTEGER REFERENCES topics(id), PRIMARY KEY(user_id, topic_id));');
+db.exec('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, email TEXT NOT NULL COLLATE NOCASE UNIQUE, password TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT \'Asia/Shanghai\', privacy TEXT NOT NULL DEFAULT \'private\', email_verified INTEGER NOT NULL DEFAULT 1 CHECK(email_verified IN (0,1)), created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, csrf TEXT NOT NULL, user_id INTEGER REFERENCES users(id), expires INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS forums (id INTEGER PRIMARY KEY, category TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL, sort INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS topics (id INTEGER PRIMARY KEY, forum_id INTEGER NOT NULL REFERENCES forums(id), author_id INTEGER NOT NULL REFERENCES users(id), title TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, views INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, topic_id INTEGER NOT NULL REFERENCES topics(id), author_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS saved (user_id INTEGER REFERENCES users(id), topic_id INTEGER REFERENCES topics(id), PRIMARY KEY(user_id, topic_id)); CREATE TABLE IF NOT EXISTS email_codes (id INTEGER PRIMARY KEY, email TEXT NOT NULL COLLATE NOCASE, code_hash TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, expires INTEGER NOT NULL, created INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0 CHECK(used IN (0,1))); CREATE INDEX IF NOT EXISTS email_codes_lookup ON email_codes(email, created);');
 const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
 if (!userColumns.has('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))');
+if (!userColumns.has('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1 CHECK(email_verified IN (0,1))');
 const derive = promisify(scrypt);
 const hashToken = value => createHash('sha256').update(value).digest('hex');
 const errors = (status, message) => Object.assign(new Error(message), { status });
 const now = () => Date.now();
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY?.trim() || '';
+const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY?.trim() || '';
+const RESEND_API_KEY = process.env.RESEND_API_KEY?.trim() || '';
+const MAIL_FROM = process.env.MAIL_FROM?.trim() || '';
+const EMAIL_CODE_SECRET = process.env.EMAIL_CODE_SECRET?.trim() || randomBytes(32).toString('hex');
+const TURNSTILE_ENABLED = Boolean(TURNSTILE_SITE_KEY && TURNSTILE_SECRET_KEY);
+const EMAIL_VERIFICATION_ENABLED = Boolean(RESEND_API_KEY && MAIL_FROM);
+const EMAIL_CODE_TTL = 10 * 60 * 1000;
+const EMAIL_CODE_COOLDOWN = 60 * 1000;
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const authConfig = () => ({turnstileEnabled:TURNSTILE_ENABLED,turnstileSiteKey:TURNSTILE_ENABLED?TURNSTILE_SITE_KEY:'',emailVerificationEnabled:EMAIL_VERIFICATION_ENABLED});
 const publicUser = id => { const user = db.prepare("SELECT u.id,u.username,u.created,u.timezone,u.privacy,(SELECT '/avatars/'||u.id||'?v='||avatar_version FROM user_profiles WHERE user_id=u.id) AS avatarUrl,coalesce(r.role,'member') AS role,m.expires AS subscriptionExpires FROM users u LEFT JOIN user_roles r ON r.user_id=u.id LEFT JOIN memberships m ON m.user_id=u.id WHERE u.id=?").get(id); return user ? {...user,isSubscriber:Boolean(user.subscriptionExpires && user.subscriptionExpires>now())} : null; };
 
 if (!db.prepare('SELECT id FROM forums LIMIT 1').get()) {
@@ -61,7 +73,7 @@ function makeSession(res, userId = null, remember = false) {
   const maxAge = remember ? 2592000 : 86400;
   db.prepare('INSERT INTO sessions (token,csrf,user_id,expires) VALUES (?,?,?,?)').run(hashToken(token), csrf, userId, now() + maxAge * 1000);
   res.setHeader('Set-Cookie', 'gs_local=' + token + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + maxAge + (process.env.GS_SECURE_COOKIE === '1' ? '; Secure' : ''));
-  return {user: userId ? publicUser(userId) : null, csrf};
+  return {user: userId ? publicUser(userId) : null, csrf, auth: authConfig()};
 }
 const cookies = req => Object.fromEntries((req.headers.cookie || '').split(';').map(s => s.trim().split('=')));
 function currentSession(req) {
@@ -76,6 +88,59 @@ function validateWrite(req, session, mime='application/json') {
 }
 function requireUser(session) { if (!session?.user_id) throw errors(401, '请先登录后继续。'); return session.user_id; }
 function text(value, min, max, label) { if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max) throw errors(400, label + '长度须为 ' + min + '～' + max + ' 个字符。'); return value.trim(); }
+function validEmail(value) { return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()); }
+function emailCodeHash(email, code) { return hashToken(email.toLowerCase() + ':' + code + ':' + EMAIL_CODE_SECRET); }
+async function verifyTurnstile(token) {
+  if (!TURNSTILE_ENABLED) return;
+  if (typeof token !== 'string' || !token.trim()) throw errors(400, '请完成人机验证。');
+  let response;
+  try {
+    response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({secret: TURNSTILE_SECRET_KEY, response: token})
+    });
+  } catch { throw errors(502, '人机验证服务暂时不可用，请稍后重试。'); }
+  if (!response.ok) throw errors(502, '人机验证服务暂时不可用，请稍后重试。');
+  let result; try { result = await response.json(); } catch { throw errors(502, '人机验证服务返回无效结果。'); }
+  if (!result.success) throw errors(400, '人机验证未通过，请重试。');
+}
+async function sendVerificationEmail(email, code) {
+  let response;
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        from: MAIL_FROM,
+        to: [email],
+        subject: 'xfcode 邮箱验证码',
+        text: '你的 xfcode 注册验证码是：' + code + '\n验证码 10 分钟内有效。如非本人操作，请忽略此邮件。',
+        html: '<p>你的 xfcode 注册验证码是：</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">' + code + '</p><p>验证码 10 分钟内有效。如非本人操作，请忽略此邮件。</p>'
+      })
+    });
+  } catch { throw errors(502, '邮件服务暂时不可用，请稍后重试。'); }
+  if (!response.ok) { console.error('邮箱验证码发送失败，Resend 状态码：' + response.status); throw errors(502, '邮件发送失败，请检查邮箱地址后重试。'); }
+}
+function checkEmailCode(email) {
+  const time = now();
+  db.prepare('DELETE FROM email_codes WHERE expires<? OR used=1').run(time);
+  const recent = db.prepare('SELECT created FROM email_codes WHERE email=? ORDER BY created DESC LIMIT 6').all(email);
+  if (recent[0] && time - recent[0].created < EMAIL_CODE_COOLDOWN) throw errors(429, '验证码发送过于频繁，请稍后再试。');
+  if (recent.filter(row => time - row.created < 3600000).length >= 5) throw errors(429, '该邮箱今日验证码请求次数过多，请稍后再试。');
+}
+function consumeEmailCode(email, code) {
+  if (!EMAIL_VERIFICATION_ENABLED) return;
+  if (!/^\d{6}$/.test(code)) throw errors(400, '邮箱验证码格式不正确。');
+  const record = db.prepare('SELECT * FROM email_codes WHERE email=? AND used=0 ORDER BY created DESC LIMIT 1').get(email);
+  if (!record || record.expires <= now()) throw errors(400, '邮箱验证码无效或已过期。');
+  if (record.attempts >= EMAIL_CODE_MAX_ATTEMPTS) throw errors(400, '邮箱验证码尝试次数过多，请重新发送。');
+  db.prepare('UPDATE email_codes SET attempts=attempts+1 WHERE id=?').run(record.id);
+  const expected = Buffer.from(record.code_hash, 'hex');
+  const actual = Buffer.from(emailCodeHash(email, code), 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw errors(400, '邮箱验证码不正确。');
+  db.prepare('UPDATE email_codes SET used=1 WHERE id=?').run(record.id);
+}
 function assertTopic(id) { const row = db.prepare('SELECT * FROM topics WHERE id=?').get(id); if (!row) throw errors(404, '找不到此主题。'); return row; }
 
 const PUBLIC_PAGE_ROUTES = new Set(['/forums/login.php','/forums/register.php','/forums/forget.php']);
@@ -93,7 +158,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self' https://challenges.cloudflare.com; img-src 'self' data:; font-src 'self'; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; form-action 'self'; base-uri 'self'");
   try {
     const url = new URL(req.url, 'http://localhost');
     const route = url.pathname;
@@ -102,30 +167,46 @@ const server = http.createServer(async (req, res) => {
     if (route.startsWith('/downloads/')) { await features.download(req,res,url,currentSession(req)); return; }
     if (route.startsWith('/api/')) {
       let session = currentSession(req);
-      if (method === 'GET' && route === '/api/session') { send(res,200,session ? {user: session.user_id ? publicUser(session.user_id) : null, csrf:session.csrf} : makeSession(res)); return; }
-      if (!['/api/login','/api/register'].includes(route) && !session?.user_id) throw errors(401,'请先登录后继续。');
+      if (method === 'GET' && route === '/api/session') { send(res,200,session ? {user: session.user_id ? publicUser(session.user_id) : null, csrf:session.csrf, auth:authConfig()} : makeSession(res)); return; }
+      if (!['/api/login','/api/register','/api/email/send-code'].includes(route) && !session?.user_id) throw errors(401,'请先登录后继续。');
       if (method !== 'GET') validateWrite(req, session,route==='/api/admin/releases'?'application/octet-stream':'application/json');
       if(await profiles.handle(req,res,url,session)) return;
       if(await features.handle(req,res,url,session)) return;
+      if (method === 'POST' && route === '/api/email/send-code') {
+        if (!EMAIL_VERIFICATION_ENABLED) throw errors(503, '邮箱验证尚未配置。');
+        checkRate(req); const body = await jsonBody(req);
+        const email = text(body.email, 3, 254, '邮箱').toLowerCase();
+        if (!validEmail(email)) throw errors(400, '请输入有效的邮箱地址。');
+        if (db.prepare('SELECT id FROM users WHERE email=?').get(email)) throw errors(409, '该邮箱已被注册。');
+        await verifyTurnstile(body.turnstileToken);
+        checkEmailCode(email);
+        const code = String(randomInt(0, 1000000)).padStart(6, '0');
+        const created = now();
+        const id = Number(db.prepare('INSERT INTO email_codes (email,code_hash,expires,created) VALUES (?,?,?,?)').run(email,emailCodeHash(email,code),created + EMAIL_CODE_TTL,created).lastInsertRowid);
+        try { await sendVerificationEmail(email, code); } catch (error) { db.prepare('DELETE FROM email_codes WHERE id=?').run(id); throw error; }
+        send(res,200,{ok:true,expiresIn:EMAIL_CODE_TTL / 1000}); return;
+      }
       if (method === 'POST' && route === '/api/register') {
         checkRate(req); const body = await jsonBody(req);
+        await verifyTurnstile(body.turnstileToken);
         const username = text(body.username, 3, 25, '账号');
         if (!/^[a-z0-9]+$/i.test(username)) throw errors(400, '账号只能包含英文字母和数字。');
-        const email = text(body.email, 3, 254, '邮箱');
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw errors(400, '请输入有效的邮箱地址。');
+        const email = text(body.email, 3, 254, '邮箱').toLowerCase();
+        if (!validEmail(email)) throw errors(400, '请输入有效的邮箱地址。');
+        if (EMAIL_VERIFICATION_ENABLED) consumeEmailCode(email, text(body.emailCode || '', 6, 6, '邮箱验证码'));
         if (typeof body.password !== 'string' || body.password.length < 10 || body.password.length > 256) throw errors(400,'密码长度须为 10～256 位。');
         if (body.password !== body.confirm) throw errors(400,'两次输入的密码不一致。');
         if (!['Asia/Shanghai','UTC','Europe/London','Europe/Berlin','America/New_York','America/Los_Angeles','Asia/Tokyo','Australia/Sydney'].includes(body.timezone)) throw errors(400, '请选择有效的时区。');
         if (!['public','form','private'].includes(body.privacy)) throw errors(400, '请选择有效的隐私选项。');
         const salt = randomBytes(16).toString('hex');
         const password = salt + ':' + Buffer.from(await derive(body.password,salt,64)).toString('hex');
-        let id; try { id = Number(db.prepare('INSERT INTO users (username,email,password,timezone,privacy,created) VALUES (?,?,?,?,?,?)').run(username,email,password,body.timezone,body.privacy,now()).lastInsertRowid); } catch (error) { if (String(error).includes('UNIQUE')) throw errors(409,'该账号或邮箱已被注册。'); throw error; }
+        let id; try { id = Number(db.prepare('INSERT INTO users (username,email,password,timezone,privacy,email_verified,created) VALUES (?,?,?,?,?,?,?)').run(username,email,password,body.timezone,body.privacy,1,now()).lastInsertRowid); } catch (error) { if (String(error).includes('UNIQUE')) throw errors(409,'该账号或邮箱已被注册。'); throw error; }
         db.prepare('DELETE FROM sessions WHERE token=?').run(session.token);
         features.ensureOwner();
         send(res,201,makeSession(res,id)); return;
       }
       if (method === 'POST' && route === '/api/login') {
-        checkRate(req); const body = await jsonBody(req);
+        checkRate(req); const body = await jsonBody(req); await verifyTurnstile(body.turnstileToken);
         const username = text(body.username,1,25,'账号');
         if (typeof body.password !== 'string' || body.password.length > 256) throw errors(400,'请输入密码。');
         const user = db.prepare('SELECT * FROM users WHERE username=?').get(username);
