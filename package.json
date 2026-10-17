@@ -1,0 +1,14 @@
+{
+  "name": "xfcode-community",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "独立运行的 xfcode 中文社区网站。",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
