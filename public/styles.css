@@ -22,3 +22,8 @@
 .post-author .avatar{display:flex}
 #brdwelcome .user-identity--admin{color:#ffd54f}#brdwelcome .user-identity--subscribed{color:#ff6b6b}#brdwelcome .user-identity--unsubscribed{color:#64b5f6}
  .turnstile-widget{min-width:250px;min-height:65px;display:flex;align-items:center}.email-code-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}.email-code-row .field{margin-bottom:0}
+
+
+/* Keep Turnstile aligned without the padded local CAPTCHA card behind its iframe. */
+.captcha-box:has(> .turnstile-widget){display:block;width:300px;max-width:100%;min-width:0;min-height:0;background:transparent;color:inherit;border:0;border-radius:0;padding:0;overflow:visible}
+.captcha-box:has(> .turnstile-widget) .turnstile-widget{display:block;width:300px;max-width:100%;min-width:0;min-height:65px;line-height:0}
