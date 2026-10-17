@@ -1,6 +1,7 @@
 {
   "kind": "service",
-  "start": "node server.mjs",
+  "runtime": "container",
+  "dockerfile": "Dockerfile",
   "port": 4173,
   "alwaysOn": false,
   "node": "24"
