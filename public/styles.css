@@ -21,3 +21,4 @@
 /* Keep profile and post avatars visible on small screens, too. */
 .post-author .avatar{display:flex}
 #brdwelcome .user-identity--admin{color:#ffd54f}#brdwelcome .user-identity--subscribed{color:#ff6b6b}#brdwelcome .user-identity--unsubscribed{color:#64b5f6}
+ .turnstile-widget{min-width:250px;min-height:65px;display:flex;align-items:center}.email-code-row{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}.email-code-row .field{margin-bottom:0}
