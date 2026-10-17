@@ -1,0 +1,7 @@
+{
+  "kind": "service",
+  "start": "npm start",
+  "port": 4173,
+  "alwaysOn": false,
+  "node": "24"
+}

@@ -189,6 +189,6 @@ const server = http.createServer(async (req, res) => {
   } catch (error) { if (!res.headersSent) send(res,error.status || 500,{error:error.status ? error.message : '操作失败，请稍后重试。'}); else res.end(); if(!error.status) console.error(error); }
 });
 const PORT = Number(process.env.PORT || 4173);
-server.listen(PORT,process.env.HOST || '127.0.0.1',()=>console.log('xfcode 本地社区： http://localhost:' + server.address().port + '/forums/index.php'));
+server.listen(PORT,process.env.HOST || '0.0.0.0',()=>console.log('xfcode 本地社区： http://localhost:' + server.address().port + '/forums/index.php'));
 function shutdown() {features.shutdown();server.close(()=>{db.close();process.exit(0);});}
 process.on('SIGTERM',shutdown);process.on('SIGINT',shutdown);
