@@ -1,6 +1,6 @@
 {
   "kind": "service",
-  "start": "npm start",
+  "start": "node server.mjs",
   "port": 4173,
   "alwaysOn": false,
   "node": "24"
