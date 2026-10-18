@@ -5,10 +5,11 @@
   "type": "module",
   "description": "独立运行的 xfcode 中文社区网站。",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "reset:accounts": "node scripts/reset-accounts.mjs"
   }
 }

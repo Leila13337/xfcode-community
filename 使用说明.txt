@@ -1,7 +1,6 @@
-xfcode 完整网站源码包
+xfcode 社区网站源码包
 
-包含：网站前后端源码、页面资源、自动化测试、当前数据库及上传的下载资源。
-数据库保留账号、权限、订阅、帖子、头像和联系方式；导出时清除了登录会话，启动后请重新登录。
+本 ZIP 包含网站源码、页面资源和自动化测试，不包含运行数据目录 data/（SQLite 数据库 forum.sqlite 和上传文件 releases/）。线上数据位于部署服务配置的持久化目录，应单独备份。
 
 启动：
 1. 将 xfcode 文件夹解压到任意目录。
@@ -10,9 +9,15 @@ xfcode 完整网站源码包
 4. 浏览器打开 http://localhost:4173/forums/index.php
 
 本机 START.cmd 会尝试使用已安装的 Node.js 或本机现有运行时。换电脑时需安装 Node.js。
-如果 4173 端口已被当前网站占用，可关闭原服务后启动，或在 PowerShell 执行：
+如果 4173 端口已被占用，可关闭原服务后启动，或在 PowerShell 执行：
 $env:PORT='4174'; node server.mjs
 然后打开 http://localhost:4174/forums/index.php
 
 验证：node --test test/*.test.mjs
-打包前 33 项自动化测试通过。此包包含真实网站数据，请妥善保管。
+
+一次性账号重置：
+scripts/reset-accounts.mjs 默认只预览，不修改数据库。请通过环境变量 LEILA_ADMIN_PASSWORD 提供管理员密码；新建 Leila 账号时建议同时设置 LEILA_ADMIN_EMAIL（未设置时使用不能收信的占位邮箱）。先运行：
+node scripts/reset-accounts.mjs --dry-run
+确认预览范围后再运行：
+node scripts/reset-accounts.mjs --apply --confirm-delete-other-accounts
+脚本会先在数据库目录创建一致性备份，然后删除其他账号、清理其资料/会员和订阅申请/收藏/会话；其主题、帖子和聊天保留并匿名化，下载记录保留但解除账号关联。此脚本是手动工具，不会随网站启动自动运行。

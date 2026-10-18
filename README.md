@@ -17,6 +17,23 @@
 全新安装中，第一个注册成功的真实账号自动成为管理员，顶栏会出现 Admin。管理员可在 Admin → Members 禁用或解禁其他真实账号；禁用立即使现有会话失效，并阻止重新登录。
 升级已有安装时，最早注册的真实账号成为管理员；原有账号、帖子和回复保留。
 
+## 一次性管理员账号重置
+
+`node scripts/reset-accounts.mjs --dry-run` 只预览、不改数据库。实际执行需显式添加 `--apply --confirm-delete-other-accounts`，并将 `GS_DATA_DIR` 指向网站当前使用的数据目录。执行前会在数据库目录创建一致性备份；脚本仅手动运行，不会在网站启动时自动删除账号。 源码 ZIP 不含线上 `forum.sqlite`；部署代码后，仍需在能访问线上持久化数据目录的运行环境里单独执行一次脚本。
+
+通过环境变量提供密码（源码和数据库均不保存明文）。若数据库中还没有 Leila 账号，建议设置 `LEILA_ADMIN_EMAIL` 使用真实邮箱；不设置时会使用 `leila-admin@invalid.local`，该占位邮箱不能用于收信或找回密码。已有 Leila 时不设置邮箱变量会沿用其现有邮箱。示例 PowerShell：
+
+```powershell
+$env:LEILA_ADMIN_EMAIL = "admin@example.com"
+$securePassword = Read-Host "请输入 Leila 管理员密码" -AsSecureString
+$env:LEILA_ADMIN_PASSWORD = [System.Net.NetworkCredential]::new("", $securePassword).Password
+node scripts/reset-accounts.mjs --dry-run
+# 检查预览无误后，再有意执行：
+node scripts/reset-accounts.mjs --apply --confirm-delete-other-accounts
+Remove-Item Env:LEILA_ADMIN_PASSWORD
+```
+
+该操作删除其他可登录账号，清理其个人资料、会员/订阅申请、收藏和会话；主题、帖子、聊天内容保留并改由不可登录的匿名系统用户显示，下载记录保留但解除账号关联。订阅激活码的创建者/兑换者也会匿名化。请先核对预览和数据库备份。
 ## 一个分组
 
 所有原有主题和回复合并至 Community。主题、回复和收藏的 ID 保留，原有论坛链接也能指向合并后的社区。
@@ -96,7 +113,7 @@ ZIP 包不包含预览账号、订阅、会话或测试上传文件；解压启�
 
     npm test
 
-26 项测试通过，包括原有功能回归、旧内容迁移、免费试用接口已关闭、激活码不可重用、管理员权限、审批幂等、过期下载限制、文件字节一致性、双用户消息推送、聊天分页与重启持久化。
+37 项测试通过，包括原有功能回归、旧内容迁移、免费试用接口已关闭、激活码不可重用、管理员权限、审批幂等、过期下载限制、文件字节一致性、双用户消息推送、聊天分页与重启持久化。
 
 前端样式参考了 2026-10-15 可见的原站公开页面，并按本次需求扩展；未宣称会员区域与原站完全一致。
 Raleway 字体的许可证位于 public/assets/OFL.txt。
