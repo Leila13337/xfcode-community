@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { installProfiles } from './profiles.mjs';
+import { bootstrapAdmin } from './admin-bootstrap.mjs';
 import { installFeatures } from './features.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { scrypt, randomBytes, randomInt, createHash, timingSafeEqual } from 'node:crypto';
@@ -153,6 +154,15 @@ function redirectToLogin(req,res) {
 
 const profiles = installProfiles({db,send,errors,requireUser,jsonBody,publicUser});
 const features = await installFeatures({db,DATA,send,errors,now,publicUser,requireUser,jsonBody,text,hashToken,currentSession});
+
+const adminBootstrap = await bootstrapAdmin({
+  db,
+  username: process.env.BOOTSTRAP_ADMIN_USERNAME,
+  password: process.env.BOOTSTRAP_ADMIN_PASSWORD,
+  email: process.env.BOOTSTRAP_ADMIN_EMAIL,
+});
+if (adminBootstrap?.created) console.log('Bootstrap administrator created.');
+else if (adminBootstrap) console.log('Bootstrap administrator credentials refreshed.');
 
 const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
